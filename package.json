@@ -1,6 +1,6 @@
 {
   "name": "@obieg-zero/plugin-workflow-crm",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "CRM kancelarii z workflow, sprawami i dokumentami",
   "price": 1000,
   "private": true
