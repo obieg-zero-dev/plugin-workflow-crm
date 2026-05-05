@@ -8717,7 +8717,7 @@ function ResizeControl({ nodeId, position, variant = ResizeControlVariant.Handle
 }
 memo(ResizeControl);
 function extractWorkflowSchema(stages) {
-  var _a, _b;
+  var _a, _b, _c, _d;
   const byType = /* @__PURE__ */ new Map();
   for (const stage of stages) {
     const type = stage.recordType || "case";
@@ -8732,6 +8732,15 @@ function extractWorkflowSchema(stages) {
     if (questions) {
       for (const key of Object.keys(questions)) {
         if (!fields.has(key)) fields.set(key, { key, label: key });
+      }
+    }
+    const parse = (_c = stage.pipeline) == null ? void 0 : _c.parse;
+    if ((_d = parse == null ? void 0 : parse.columns) == null ? void 0 : _d.length) {
+      const parseType = parse.type;
+      if (!byType.has(parseType)) byType.set(parseType, /* @__PURE__ */ new Map());
+      const pf = byType.get(parseType);
+      for (const col of parse.columns) {
+        if (!pf.has(col.key)) pf.set(col.key, col);
       }
     }
   }
@@ -8756,160 +8765,6 @@ function buildWorkflow(rec) {
 function getNextStage(wf, currentId) {
   const idx = wf.stages.findIndex((s) => s.id === currentId);
   return idx >= 0 && idx < wf.stages.length - 1 ? wf.stages[idx + 1].id : null;
-}
-function SelectField({ field, bind, store, ui }) {
-  const options = store.usePosts(field.inputType.split(":")[1]).map((r) => ({ value: r.id, label: r.data.name || r.id }));
-  return /* @__PURE__ */ jsx(ui.Field, { label: field.label, required: field.required, children: options.length > 0 ? /* @__PURE__ */ jsx(ui.Select, { ...bind(field.key), options: [{ value: "", label: "— wybierz —" }, ...options] }) : /* @__PURE__ */ jsx(ui.Input, { ...bind(field.key), placeholder: "Wpisz ręcznie" }) });
-}
-function FormView({ node, cas, wf, store, sdk, ui, advanceToStage, getNextStage: getNextStage2 }) {
-  var _a, _b;
-  const stepNum = (_a = node.data.label.match(/^(\d+)/)) == null ? void 0 : _a[1];
-  const title = node.data.label.replace(/^\d+\.\s*/, "");
-  const stage = wf.stages.find((s) => s.id === node.id);
-  const recordType = stage.recordType || "case";
-  const isLinked = recordType !== "case";
-  const linkedId = cas.data[`${recordType}Id`];
-  const linkedRecords = store.usePosts(recordType);
-  const linkedRecord = isLinked && linkedId ? linkedRecords.find((r) => r.id === linkedId) : void 0;
-  const schema = node.data.fields || ((_b = store.getType(recordType)) == null ? void 0 : _b.schema) || [];
-  const formDefaults = isLinked ? (linkedRecord == null ? void 0 : linkedRecord.data) || {} : cas.data || {};
-  const isComplete = (data) => schema.filter((f) => f.required).every((f) => !!data[f.key]);
-  const { bind, incomplete, submit } = sdk.useForm(formDefaults, {
-    onSubmit: (data) => {
-      submitStageData(store, cas, stage, data);
-      sdk.log("Zapisano", "ok");
-    },
-    isComplete,
-    sync: isLinked ? linkedRecord == null ? void 0 : linkedRecord.data : cas.data
-  });
-  const nextId = getNextStage2(wf, node.id);
-  return /* @__PURE__ */ jsx(ui.Page, { children: /* @__PURE__ */ jsx(ui.Stage, { children: /* @__PURE__ */ jsx(
-    ui.StageLayout,
-    {
-      top: /* @__PURE__ */ jsxs(ui.Stack, { gap: "md", children: [
-        /* @__PURE__ */ jsx(ui.StepHeading, { step: stepNum, title, subtitle: node.data.description }),
-        schema.map(
-          (f) => {
-            var _a2;
-            return ((_a2 = f.inputType) == null ? void 0 : _a2.startsWith("select:")) ? /* @__PURE__ */ jsx(SelectField, { field: f, bind, store, ui }, f.key) : /* @__PURE__ */ jsx(ui.Field, { label: f.label, required: f.required, children: /* @__PURE__ */ jsx(ui.Input, { ...bind(f.key), type: f.inputType }) }, f.key);
-          }
-        )
-      ] }),
-      bottom: /* @__PURE__ */ jsxs(ui.Stack, { children: [
-        nextId && /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "primary", block: true, disabled: incomplete, onClick: async () => {
-          await submit();
-          advanceToStage(cas.id, nextId, wf);
-        }, children: "Dalej" }),
-        !nextId && /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "primary", block: true, disabled: incomplete, onClick: submit, children: "Zapisz" })
-      ] })
-    }
-  ) }) });
-}
-function DecisionView({ node, cas, wf, ui, advanceToStage }) {
-  const title = node.data.label.replace(/^\d+\.\s*/, "");
-  return /* @__PURE__ */ jsx(ui.Page, { children: /* @__PURE__ */ jsx(ui.Stage, { children: /* @__PURE__ */ jsx(
-    ui.StageLayout,
-    {
-      top: /* @__PURE__ */ jsx(ui.StepHeading, { title, subtitle: "Wybierz dalsze działanie" }),
-      bottom: /* @__PURE__ */ jsx(ui.Stack, { children: wf.branches.filter((b) => b.from === node.id).map((b) => /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "primary", outline: true, block: true, onClick: () => advanceToStage(cas.id, b.to, wf), children: b.label || b.to }, b.to)) })
-    }
-  ) }) });
-}
-function TimelineView({ node, cas, wf, ui, sdk, icons, store, uploadFile, downloadFile, useEvents, advanceToStage, getNextStage: getNextStage2 }) {
-  var _a;
-  const stepNum = (_a = node.data.label.match(/^(\d+)/)) == null ? void 0 : _a[1];
-  const title = node.data.label.replace(/^\d+\.\s*/, "");
-  const events = useEvents(cas.id);
-  const { form, bind, set: set2 } = sdk.useForm({ kind: "notatka", text: "", date: "" });
-  const KINDS = [{ value: "notatka", label: "Notatka" }, { value: "termin", label: "Termin" }];
-  const KCOL = { notatka: "info", termin: "warning", plik: "accent", etap: "success" };
-  const nextId = getNextStage2(wf, node.id);
-  const addEvent = async () => {
-    if (!form.text.trim()) return;
-    await store.add("event", { kind: form.kind, text: form.text.trim(), date: form.date, done: false }, { parentId: cas.id });
-    set2({ text: "", date: "" });
-    sdk.log(`Dodano ${form.kind}`, "ok");
-  };
-  return /* @__PURE__ */ jsx(ui.Page, { children: /* @__PURE__ */ jsx(ui.Stage, { children: /* @__PURE__ */ jsx(
-    ui.StageLayout,
-    {
-      top: /* @__PURE__ */ jsxs(ui.Stack, { gap: "md", children: [
-        /* @__PURE__ */ jsx(ui.StepHeading, { step: stepNum, title, subtitle: node.data.description }),
-        events.map((ev) => /* @__PURE__ */ jsx(
-          ui.ListItem,
-          {
-            label: /* @__PURE__ */ jsxs(Fragment, { children: [
-              /* @__PURE__ */ jsx(ui.Badge, { color: KCOL[ev.data.kind] || "ghost", children: ev.data.kind }),
-              " ",
-              ev.data.text
-            ] }),
-            detail: ev.data.date || new Date(ev.createdAt).toISOString().slice(0, 10),
-            onClick: ev.data.kind === "plik" ? () => downloadFile(ev) : void 0,
-            action: ev.data.kind === "termin" && !ev.data.done ? /* @__PURE__ */ jsx(ui.Button, { size: "xs", color: "success", onClick: () => store.update(ev.id, { done: true }), children: "✓" }) : /* @__PURE__ */ jsx(ui.RemoveButton, { onClick: () => store.remove(ev.id) })
-          },
-          ev.id
-        ))
-      ] }),
-      bottom: /* @__PURE__ */ jsxs(ui.Stack, { children: [
-        /* @__PURE__ */ jsxs(ui.Row, { children: [
-          /* @__PURE__ */ jsx(ui.Select, { value: form.kind, options: KINDS, onChange: (e) => set2("kind", e.target.value) }),
-          /* @__PURE__ */ jsx(ui.Input, { ...bind("text"), placeholder: "Treść...", onKeyDown: (e) => e.key === "Enter" && addEvent() }),
-          form.kind === "termin" && /* @__PURE__ */ jsx(ui.Input, { ...bind("date"), type: "date" }),
-          /* @__PURE__ */ jsx(ui.Button, { size: "xs", color: "primary", onClick: addEvent, children: "+" }),
-          /* @__PURE__ */ jsx(ui.Button, { size: "xs", color: "ghost", onClick: () => uploadFile(cas.id), children: /* @__PURE__ */ jsx(icons.Upload, { size: 12 }) })
-        ] }),
-        nextId && /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "primary", block: true, onClick: () => advanceToStage(cas.id, nextId, wf), children: "Dalej" })
-      ] })
-    }
-  ) }) });
-}
-function GenericView({ node, cas, wf, ui, advanceToStage, getNextStage: getNextStage2 }) {
-  var _a;
-  const stepNum = (_a = node.data.label.match(/^(\d+)/)) == null ? void 0 : _a[1];
-  const title = node.data.label.replace(/^\d+\.\s*/, "");
-  const nextId = getNextStage2(wf, node.id);
-  const cl = node.data.checklist || [];
-  return /* @__PURE__ */ jsx(ui.Page, { children: /* @__PURE__ */ jsx(ui.Stage, { children: /* @__PURE__ */ jsx(
-    ui.StageLayout,
-    {
-      top: /* @__PURE__ */ jsxs(ui.Stack, { gap: "md", children: [
-        /* @__PURE__ */ jsx(ui.StepHeading, { step: stepNum, title, subtitle: node.data.description }),
-        cl.length > 0 && cl.map((c, i) => /* @__PURE__ */ jsx(ui.CheckItem, { label: c.text }, i))
-      ] }),
-      bottom: nextId ? /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "primary", block: true, onClick: () => advanceToStage(cas.id, nextId, wf), children: "Dalej" }) : void 0
-    }
-  ) }) });
-}
-function submitStageData(store, cas, stage, data) {
-  const recordType = stage.recordType || "case";
-  if (recordType === "case") {
-    store.update(cas.id, data);
-    return {};
-  }
-  const refKey = `${recordType}Id`;
-  const existingId = cas.data[refKey];
-  if (existingId && store.get(existingId)) {
-    store.update(existingId, data);
-    return { linkedId: existingId };
-  }
-  const rec = store.add(recordType, data, { parentId: cas.id });
-  store.update(cas.id, { [refKey]: rec.id });
-  return { linkedId: rec.id };
-}
-const builtinViews = {
-  form: FormView,
-  decision: DecisionView,
-  timeline: TimelineView,
-  generic: GenericView
-};
-const customViews = {};
-function registerStageView(name, component) {
-  customViews[name] = component;
-}
-function getStageView(node) {
-  if (node.id.startsWith("dec")) return builtinViews.decision;
-  const v = node.data.view || "generic";
-  return customViews[v] || builtinViews[v] || builtinViews.generic;
 }
 const TASK_ICONS = { data: "Edit3", upload: "Upload", extract: "Search", generate: "FileText" };
 const handleStyle = { width: 8, height: 8, background: "#94a3b8" };
@@ -9118,6 +8973,13 @@ async function createEmbedder(opts) {
     }
   };
 }
+const parsers = /* @__PURE__ */ new Map();
+function registerParser(type, parser) {
+  parsers.set(type, parser);
+}
+function getParser(type) {
+  return parsers.get(type);
+}
 let embedder = null;
 async function getEmbedder(log) {
   if (!embedder) {
@@ -9136,9 +8998,9 @@ async function getEmbedder(log) {
   }
   return embedder;
 }
-async function runOcrPipeline(store, caseId, fileEvents, existingEvents, pipeline, log, apiConfig) {
+async function runOcrPipeline(store, caseId, fileEvents, existingEvents, pipeline, log, apiConfig, stageId) {
   var _a, _b;
-  const summary = { filesProcessed: 0, totalPages: 0, totalChars: 0, classified: [], embedGroups: [], extracted: [] };
+  const summary = { filesProcessed: 0, totalPages: 0, totalChars: 0, classified: [], embedGroups: [], extracted: [], parsed: [] };
   const { ocr, classify, embed } = pipeline;
   const ocrEvents = [...existingEvents.ocr];
   if (ocr) {
@@ -9164,13 +9026,32 @@ async function runOcrPipeline(store, caseId, fileEvents, existingEvents, pipelin
         kind: "ocr",
         sourceFile: ev.data.text,
         sourceEventId: ev.id,
-        pages
+        pages,
+        ...stageId ? { stageId } : {}
       }, { parentId: caseId });
       ocrEvents.push(ocrEv);
       summary.filesProcessed++;
       summary.totalPages += pages.length;
       summary.totalChars += totalChars;
       log(`OCR: ${ev.data.text} → ${pages.length} stron, ${totalChars} znaków`, "ok");
+    }
+  }
+  if (pipeline.parse) {
+    const parser = getParser(pipeline.parse.type);
+    if (!parser) {
+      log(`Parser "${pipeline.parse.type}" nie jest zarejestrowany`, "error");
+    } else {
+      const allText = ocrEvents.flatMap((e) => (e.data.pages || []).map((p) => p.text)).join("\n");
+      const rows = parser(allText, pipeline.parse);
+      if (rows.length > 0) {
+        for (const row of rows) {
+          await store.add(pipeline.parse.type, row, { parentId: caseId });
+        }
+        summary.parsed.push({ type: pipeline.parse.type, rows: rows.length });
+        log(`Parse "${pipeline.parse.type}": ${rows.length} rekordów`, "ok");
+      } else {
+        log(`Parse "${pipeline.parse.type}": nie znaleziono danych`, "error");
+      }
     }
   }
   if (classify && classify.labels.length > 0) {
@@ -9233,6 +9114,7 @@ async function runOcrPipeline(store, caseId, fileEvents, existingEvents, pipelin
       await store.add("event", {
         kind: "chunks",
         group: groupCfg.group,
+        ...stageId ? { stageId } : {},
         chunks: chunks.map((c) => ({ text: c.text, page: c.page, embedding: c.embedding }))
       }, { parentId: caseId });
       summary.embedGroups.push({ group: groupCfg.group, chunks: chunks.length });
@@ -9306,6 +9188,29 @@ Odpowiedź:`;
     return "";
   }
 }
+const ROW_RE = /(\d{2})\s*[-.\/]\s*(\d{2})\s*[-.\/]\s*(\d{4})\s+(.+?)\s+(-?[\d ]+,\d{2})\s+(-?[\d ]+,\d{2})\s+(-?[\d ]+,\d{2})\s+(-?[\d ]+,\d{2})\s+(-?[\d ]+,\d{2})\s+(-?[\d ]+,\d{2})/g;
+const parsePLN = (s) => parseFloat(s.replace(/\s/g, "").replace(",", "."));
+registerParser("payment-history", (text, config) => {
+  const section = config.section || "Historia spłat";
+  const idx = text.indexOf(section);
+  const haystack = idx >= 0 ? text.slice(idx) : text;
+  const rows = [];
+  let m;
+  ROW_RE.lastIndex = 0;
+  while ((m = ROW_RE.exec(haystack)) !== null) {
+    rows.push({
+      date: `${m[3]}-${m[2]}-${m[1]}`,
+      description: m[4].trim(),
+      amount: parsePLN(m[5]),
+      principal: parsePLN(m[6]),
+      interest: parsePLN(m[7]),
+      penaltyInterest: parsePLN(m[8]),
+      fees: parsePLN(m[9]),
+      overpayment: parsePLN(m[10])
+    });
+  }
+  return rows;
+});
 const plugin = (deps) => {
   const { React, store, sdk, ui, icons } = deps;
   const { useState: useState2, useMemo: useMemo2 } = React;
@@ -9391,30 +9296,40 @@ const plugin = (deps) => {
     var _a, _b, _c, _d;
     const { node, cas, wf, uploadFile } = props;
     const events = useEvents(cas.id);
-    const files = events.filter((e) => e.data.kind === "plik");
-    const nextId = getNextStage(wf, node.id);
-    const stage = wf.stages.find((s) => s.id === node.id);
-    const hasPipeline = !!(((_a = stage == null ? void 0 : stage.pipeline) == null ? void 0 : _a.ocr) || ((_b = stage == null ? void 0 : stage.pipeline) == null ? void 0 : _b.embed));
+    const stageId = node.id;
+    const allFiles = events.filter((e) => e.data.kind === "plik");
+    const stageFiles = allFiles.filter((e) => e.data.stageId === stageId);
+    const files = stageFiles.length > 0 ? stageFiles : cas.data.currentStage === stageId ? allFiles.filter((e) => !e.data.stageId) : [];
+    const nextId = getNextStage(wf, stageId);
+    const stage = wf.stages.find((s) => s.id === stageId);
+    const hasPipeline = !!(stage == null ? void 0 : stage.pipeline);
     const [running, setRunning] = useState2(false);
-    const ocrEvents = useMemo2(() => events.filter((e) => e.data.kind === "ocr"), [events]);
-    const chunkEvents = useMemo2(() => events.filter((e) => e.data.kind === "chunks"), [events]);
-    const pipelineDone = ocrEvents.length > 0;
+    const apiUrl = store.useOption("openai_api_url") || "https://api.openai.com/v1/chat/completions";
+    const apiKey = store.useOption("openai_api_key") || "";
+    const apiModel = store.useOption("openai_model") || "gpt-4o-mini";
+    const doneKey = `_pipeline_${stageId}`;
+    const pipelineDone = !!cas.data[doneKey];
+    useMemo2(() => events.filter((e) => e.data.kind === "ocr"), [events]);
+    useMemo2(() => events.filter((e) => e.data.kind === "chunks"), [events]);
     const extracted = useMemo2(() => {
       var _a2, _b2;
       const qs = ((_b2 = (_a2 = stage == null ? void 0 : stage.pipeline) == null ? void 0 : _a2.extract) == null ? void 0 : _b2.questions) || {};
       return Object.keys(qs).filter((k) => cas.data[k]).map((k) => ({ field: k, value: String(cas.data[k]) }));
     }, [cas.data, stage]);
+    const parseType = (_b = (_a = stage == null ? void 0 : stage.pipeline) == null ? void 0 : _a.parse) == null ? void 0 : _b.type;
+    const parsedRows = store.useChildren(cas.id, parseType || "");
+    const runningRef = React.useRef(false);
     const runPipeline = async () => {
-      if (!(stage == null ? void 0 : stage.pipeline)) return;
+      if (!(stage == null ? void 0 : stage.pipeline) || runningRef.current) return;
+      runningRef.current = true;
       setRunning(true);
       try {
-        const apiUrl = store.useOption("openai_api_url") || "https://api.openai.com/v1/chat/completions";
-        const apiKey = store.useOption("openai_api_key") || "";
-        const model = store.useOption("openai_model") || "gpt-4o-mini";
-        await runOcrPipeline(store, cas.id, files, { ocr: ocrEvents, chunks: chunkEvents }, stage.pipeline, sdk.log, { apiUrl, apiKey, model });
+        await runOcrPipeline(store, cas.id, files, { ocr: [], chunks: [] }, stage.pipeline, sdk.log, { apiUrl, apiKey, model: apiModel }, stageId);
+        store.update(cas.id, { [doneKey]: true });
       } catch (e) {
         sdk.log(`Pipeline: ${e instanceof Error ? e.message : String(e)}`, "error");
       }
+      runningRef.current = false;
       setRunning(false);
     };
     const phase = running ? "analyzing" : pipelineDone ? "done" : files.length > 0 && hasPipeline ? "ready" : "upload";
@@ -9429,24 +9344,140 @@ const plugin = (deps) => {
           phase === "upload" && checklist.map((c, i) => /* @__PURE__ */ jsx(ui.CheckItem, { label: c.text }, i)),
           phase === "ready" && files.map((ev) => /* @__PURE__ */ jsx(ui.CheckItem, { label: ev.data.text, checked: true }, ev.id)),
           phase === "done" && extracted.length > 0 && extracted.map((e) => /* @__PURE__ */ jsx(ui.ListItem, { label: e.field, detail: e.value }, e.field)),
-          phase === "done" && extracted.length === 0 && /* @__PURE__ */ jsx(ui.CheckItem, { label: "Dokument przeanalizowany", checked: true })
+          phase === "done" && parsedRows.length > 0 && /* @__PURE__ */ jsx(ui.CheckItem, { label: `Historia spłat: ${parsedRows.length} rekordów`, checked: true }),
+          phase === "done" && extracted.length === 0 && parsedRows.length === 0 && /* @__PURE__ */ jsx(ui.CheckItem, { label: "Dokument przeanalizowany", checked: true })
         ] }),
         bottom: /* @__PURE__ */ jsxs(ui.Stack, { gap: "md", children: [
           phase === "upload" && /* @__PURE__ */ jsxs(Fragment, { children: [
-            /* @__PURE__ */ jsx(ui.FileAction, { icon: icons.Upload, title: "Wybierz plik", subtitle: "PDF, TXT lub skan dokumentu", onClick: () => uploadFile(cas.id) }),
+            /* @__PURE__ */ jsx(ui.FileAction, { icon: icons.Upload, title: "Wybierz plik", subtitle: "PDF, TXT lub skan dokumentu", onClick: async () => {
+              const ev = await uploadFile(cas.id);
+              if (ev) store.update(ev.id, { stageId });
+            } }),
             nextId && /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "primary", outline: true, block: true, onClick: () => advanceToStage(cas.id, nextId, wf), children: "Pomiń ten krok" })
           ] }),
           phase === "ready" && /* @__PURE__ */ jsxs(Fragment, { children: [
-            /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "ghost", onClick: () => uploadFile(cas.id), children: "+ Dodaj kolejny" }),
-            /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "primary", block: true, onClick: runPipeline, children: "Analizuj dokumenty" })
+            checklist.length > 1 && /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "ghost", onClick: async () => {
+              const ev = await uploadFile(cas.id);
+              if (ev) store.update(ev.id, { stageId });
+            }, children: "+ Dodaj kolejny" }),
+            /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "primary", block: true, onClick: runPipeline, children: files.length === 1 ? "Analizuj dokument" : "Analizuj dokumenty" })
           ] }),
-          phase === "analyzing" && /* @__PURE__ */ jsx(ui.Placeholder, { text: "Analizuję dokumenty...", children: /* @__PURE__ */ jsx(ui.Spinner, {}) }),
+          phase === "analyzing" && /* @__PURE__ */ jsx(ui.Placeholder, { text: "Analizuję...", children: /* @__PURE__ */ jsx(ui.Spinner, {}) }),
           phase === "done" && nextId && /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "primary", block: true, onClick: () => advanceToStage(cas.id, nextId, wf), children: "Dalej" })
         ] })
       }
     ) }) });
   }
-  registerStageView("upload", UploadView);
+  sdk.registerStageView("upload", UploadView);
+  function CalcRedirectView(props) {
+    var _a;
+    const { node, cas, wf } = props;
+    const stage = wf.stages.find((s) => s.id === node.id);
+    const targetPlugin = (stage == null ? void 0 : stage.targetPlugin) || "plugin-wibor-calc";
+    const available = sdk.getAllPlugins().some((p) => p.id === targetPlugin);
+    const nextId = getNextStage(wf, node.id);
+    const stepNum = (_a = node.data.label.match(/^(\d+)/)) == null ? void 0 : _a[1];
+    const title = node.data.label.replace(/^\d+\.\s*/, "");
+    const openCalc = () => {
+      sdk.shared.setState({
+        crm: { caseId: cas.id },
+        navigate: { from: "plugin-workflow-crm", label: "Wróć do sprawy", onReturn: () => {
+          if (nextId) advanceToStage(cas.id, nextId, wf);
+        } }
+      });
+      sdk.useHostStore.setState({ activeId: targetPlugin });
+    };
+    return /* @__PURE__ */ jsx(ui.Page, { children: /* @__PURE__ */ jsx(ui.Stage, { children: /* @__PURE__ */ jsx(
+      ui.StageLayout,
+      {
+        top: /* @__PURE__ */ jsxs(ui.Stack, { gap: "md", children: [
+          /* @__PURE__ */ jsx(ui.StepHeading, { step: stepNum, title, subtitle: node.data.description }),
+          cas.data.loanAmount && /* @__PURE__ */ jsx(ui.ListItem, { label: "Kwota kredytu", detail: `${cas.data.loanAmount} PLN` }),
+          cas.data.opponent && /* @__PURE__ */ jsx(ui.ListItem, { label: "Bank", detail: cas.data.opponent })
+        ] }),
+        bottom: /* @__PURE__ */ jsxs(ui.Stack, { gap: "md", children: [
+          available ? /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "primary", block: true, onClick: openCalc, children: "Otwórz kalkulator" }) : /* @__PURE__ */ jsx(ui.Card, { color: "warning", children: /* @__PURE__ */ jsx(ui.Text, { muted: true, children: "Plugin kalkulatora nie jest zainstalowany" }) }),
+          nextId && /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "primary", outline: true, block: true, onClick: () => advanceToStage(cas.id, nextId, wf), children: "Pomiń → Podsumowanie" })
+        ] })
+      }
+    ) }) });
+  }
+  sdk.registerStageView("calc-redirect", CalcRedirectView);
+  function SummaryReportView(props) {
+    var _a, _b, _c, _d, _e, _f;
+    const { cas } = props;
+    const events = useEvents(cas.id);
+    const clients = store.usePosts("client");
+    const opponents = store.usePosts("opponent");
+    const client = clients.find((c) => c.id === cas.data.clientId) || clients.find((c) => c.parentId === cas.id);
+    const opponent = cas.data.opponent ? opponents.find((o) => o.id === cas.data.opponent) : null;
+    const report = (_b = (_a = events.find((e) => e.data.kind === "raport-wibor")) == null ? void 0 : _a.data) == null ? void 0 : _b.report;
+    const fmt = (v) => typeof v === "number" ? v.toLocaleString("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " PLN" : String(v || "—");
+    const printReport = () => {
+      var _a2, _b2, _c2, _d2;
+      const w = window.open("", "_blank");
+      if (!w) return;
+      w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Raport WIBOR</title>
+<style>body{font-family:Arial,sans-serif;max-width:700px;margin:40px auto;color:#222}
+h1{font-size:20px;border-bottom:2px solid #333;padding-bottom:8px}
+h2{font-size:15px;color:#555;margin-top:24px}
+table{width:100%;border-collapse:collapse;margin:12px 0}
+td{padding:6px 8px;border-bottom:1px solid #eee}
+td:first-child{color:#666;width:40%}
+td:last-child{font-weight:600;text-align:right}
+.footer{margin-top:40px;font-size:11px;color:#999;border-top:1px solid #eee;padding-top:8px}
+@media print{body{margin:20px}}</style></head><body>
+<h1>Raport — analiza kredytu WIBOR</h1>
+<h2>Dane klienta</h2><table>
+<tr><td>Imię i nazwisko</td><td>${((_a2 = client == null ? void 0 : client.data) == null ? void 0 : _a2.name) || "—"}</td></tr>
+<tr><td>Telefon</td><td>${((_b2 = client == null ? void 0 : client.data) == null ? void 0 : _b2.phone) || "—"}</td></tr>
+<tr><td>Email</td><td>${((_c2 = client == null ? void 0 : client.data) == null ? void 0 : _c2.email) || "—"}</td></tr>
+</table>
+<h2>Dane kredytu</h2><table>
+<tr><td>Bank</td><td>${((_d2 = opponent == null ? void 0 : opponent.data) == null ? void 0 : _d2.name) || "—"}</td></tr>
+<tr><td>Nr umowy</td><td>${cas.data.loanNumber || "—"}</td></tr>
+<tr><td>Kwota kredytu</td><td>${fmt(cas.data.loanAmount)}</td></tr>
+<tr><td>Data umowy</td><td>${cas.data.loanDate || "—"}</td></tr>
+</table>
+${report ? `<h2>Wynik kalkulacji</h2><table>
+<tr><td>Nadpłacone odsetki</td><td>${fmt(report.overpaidInterest)}</td></tr>
+<tr><td>Przyszłe oszczędności</td><td>${fmt(report.futureSavings)}</td></tr>
+<tr><td>Korzyść łączna</td><td>${fmt(report.totalBenefit)}</td></tr>
+<tr><td>Rata aktualna</td><td>${fmt(report.currentInstallment)}</td></tr>
+<tr><td>Rata bez WIBOR</td><td>${fmt(report.installmentNoWibor)}</td></tr>
+</table>` : ""}
+<div class="footer">Wygenerowano: ${(/* @__PURE__ */ new Date()).toLocaleDateString("pl-PL")} · Obieg Zero</div>
+</body></html>`);
+      w.document.close();
+      w.print();
+    };
+    return /* @__PURE__ */ jsx(ui.Page, { children: /* @__PURE__ */ jsx(ui.Stage, { children: /* @__PURE__ */ jsx(
+      ui.StageLayout,
+      {
+        top: /* @__PURE__ */ jsxs(ui.Stack, { gap: "md", children: [
+          /* @__PURE__ */ jsx(ui.StepHeading, { step: "3", title: "Podsumowanie", subtitle: "Przegląd zebranych danych" }),
+          /* @__PURE__ */ jsx(ui.Card, { title: "Klient", children: /* @__PURE__ */ jsxs(ui.Stack, { children: [
+            /* @__PURE__ */ jsx(ui.ListItem, { label: "Imię i nazwisko", detail: ((_c = client == null ? void 0 : client.data) == null ? void 0 : _c.name) || "—" }),
+            /* @__PURE__ */ jsx(ui.ListItem, { label: "Telefon", detail: ((_d = client == null ? void 0 : client.data) == null ? void 0 : _d.phone) || "—" }),
+            /* @__PURE__ */ jsx(ui.ListItem, { label: "Email", detail: ((_e = client == null ? void 0 : client.data) == null ? void 0 : _e.email) || "—" })
+          ] }) }),
+          /* @__PURE__ */ jsx(ui.Card, { title: "Kredyt", children: /* @__PURE__ */ jsxs(ui.Stack, { children: [
+            /* @__PURE__ */ jsx(ui.ListItem, { label: "Bank", detail: ((_f = opponent == null ? void 0 : opponent.data) == null ? void 0 : _f.name) || "—" }),
+            /* @__PURE__ */ jsx(ui.ListItem, { label: "Kwota", detail: fmt(cas.data.loanAmount) }),
+            /* @__PURE__ */ jsx(ui.ListItem, { label: "Nr umowy", detail: cas.data.loanNumber || "—" })
+          ] }) }),
+          report && /* @__PURE__ */ jsx(ui.Card, { title: "Kalkulacja WIBOR", children: /* @__PURE__ */ jsxs(ui.Stack, { children: [
+            /* @__PURE__ */ jsx(ui.ListItem, { label: "Nadpłacone odsetki", detail: fmt(report.overpaidInterest) }),
+            /* @__PURE__ */ jsx(ui.ListItem, { label: "Korzyść łączna", detail: fmt(report.totalBenefit) }),
+            /* @__PURE__ */ jsx(ui.ListItem, { label: "Rata bez WIBOR", detail: fmt(report.installmentNoWibor) })
+          ] }) }),
+          !report && /* @__PURE__ */ jsx(ui.Card, { color: "warning", children: /* @__PURE__ */ jsx(ui.Text, { muted: true, children: "Brak raportu z kalkulatora — pomiń lub wróć do kroku 2" }) })
+        ] }),
+        bottom: /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "primary", block: true, onClick: printReport, children: "Drukuj raport PDF" })
+      }
+    ) }) });
+  }
+  sdk.registerStageView("summary-report", SummaryReportView);
   if (!document.getElementById("rf-css")) {
     const el = document.createElement("style");
     el.id = "rf-css";
@@ -9550,7 +9581,7 @@ const plugin = (deps) => {
     ) }) });
     const node = wf.nodes.find((n) => n.id === activeNodeId);
     if (!node) return /* @__PURE__ */ jsx(ui.Page, { children: /* @__PURE__ */ jsx(ui.Stage, { children: /* @__PURE__ */ jsx(ui.Placeholder, { text: "Wybierz etap na grafie" }) }) });
-    const View = getStageView(node);
+    const View = sdk.getStageView(node);
     return /* @__PURE__ */ jsx(View, { ...blockProps(node, cas, wf) });
   }
   function RightPanel() {
@@ -9596,7 +9627,7 @@ const plugin = (deps) => {
   sdk.registerView("crm.center", { slot: "center", component: Center });
   sdk.registerView("crm.right", { slot: "right", component: RightPanel });
   sdk.registerView("crm.footer", { slot: "footer", component: Footer });
-  return { id: "workflow-crm", label: "Kancelaria", description: "Workflow-driven CRM", version: "0.8.0", icon: icons.Briefcase };
+  return { id: "plugin-workflow-crm", label: "Kancelaria", description: "Workflow-driven CRM", version: "0.8.0", icon: icons.Briefcase };
 };
 export {
   plugin as default

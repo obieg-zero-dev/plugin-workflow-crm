@@ -2,11 +2,38 @@ import rfCSS from '@xyflow/react/dist/style.css?inline'
 import { ReactFlow } from '@xyflow/react'
 import type { PluginFactory, PostRecord } from '@obieg-zero/sdk'
 import {
-  buildWorkflow, extractWorkflowSchema, getNextStage, getStageView, registerStageView, submitStageData, EMPTY_WF,
+  buildWorkflow, extractWorkflowSchema, getNextStage, submitStageData, EMPTY_WF,
   type StageDef, type TaskDef, type WorkflowDef, type StageViewProps, type PipelineConfig,
 } from '@obieg-zero/workflow-engine/src/engine'
 import { createGraphNodes } from '@obieg-zero/workflow-engine/src/graph'
-import { runOcrPipeline, type PipelineSummary } from '@obieg-zero/doc-pipeline/src/pipeline'
+import { runOcrPipeline, registerParser, type PipelineSummary } from '@obieg-zero/doc-pipeline'
+
+// ── Built-in parsers ──────────────────────────────────────────────────
+
+const ROW_RE = /(\d{2})\s*[-.\/]\s*(\d{2})\s*[-.\/]\s*(\d{4})\s+(.+?)\s+(-?[\d ]+,\d{2})\s+(-?[\d ]+,\d{2})\s+(-?[\d ]+,\d{2})\s+(-?[\d ]+,\d{2})\s+(-?[\d ]+,\d{2})\s+(-?[\d ]+,\d{2})/g
+const parsePLN = (s: string) => parseFloat(s.replace(/\s/g, '').replace(',', '.'))
+
+registerParser('payment-history', (text, config) => {
+  const section = config.section || 'Historia spłat'
+  const idx = text.indexOf(section)
+  const haystack = idx >= 0 ? text.slice(idx) : text
+  const rows: Record<string, string | number>[] = []
+  let m: RegExpExecArray | null
+  ROW_RE.lastIndex = 0
+  while ((m = ROW_RE.exec(haystack)) !== null) {
+    rows.push({
+      date: `${m[3]}-${m[2]}-${m[1]}`,
+      description: m[4].trim(),
+      amount: parsePLN(m[5]),
+      principal: parsePLN(m[6]),
+      interest: parsePLN(m[7]),
+      penaltyInterest: parsePLN(m[8]),
+      fees: parsePLN(m[9]),
+      overpayment: parsePLN(m[10]),
+    })
+  }
+  return rows
+})
 
 const plugin: PluginFactory = (deps) => {
   const { React, store, sdk, ui, icons } = deps
@@ -92,30 +119,42 @@ const plugin: PluginFactory = (deps) => {
   function UploadView(props: StageViewProps) {
     const { node, cas, wf, uploadFile } = props
     const events = useEvents(cas.id)
-    const files = events.filter((e: PostRecord) => e.data.kind === 'plik')
-    const nextId = getNextStage(wf, node.id)
-    const stage = wf.stages.find((s: StageDef) => s.id === node.id)
-    const hasPipeline = !!(stage?.pipeline?.ocr || stage?.pipeline?.embed)
+    const stageId = node.id
+    const allFiles = events.filter((e: PostRecord) => e.data.kind === 'plik')
+    const stageFiles = allFiles.filter((e: PostRecord) => e.data.stageId === stageId)
+    const files = stageFiles.length > 0 ? stageFiles : (cas.data.currentStage === stageId ? allFiles.filter((e: PostRecord) => !e.data.stageId) : [])
+    const nextId = getNextStage(wf, stageId)
+    const stage = wf.stages.find((s: StageDef) => s.id === stageId)
+    const hasPipeline = !!(stage?.pipeline)
     const [running, setRunning] = useState(false)
+    const apiUrl = (store.useOption('openai_api_url') || 'https://api.openai.com/v1/chat/completions') as string
+    const apiKey = (store.useOption('openai_api_key') || '') as string
+    const apiModel = (store.useOption('openai_model') || 'gpt-4o-mini') as string
+
+    const doneKey = `_pipeline_${stageId}`
+    const pipelineDone = !!(cas.data as any)[doneKey]
 
     const ocrEvents = useMemo(() => events.filter(e => e.data.kind === 'ocr'), [events])
     const chunkEvents = useMemo(() => events.filter(e => e.data.kind === 'chunks'), [events])
-    const pipelineDone = ocrEvents.length > 0
 
     const extracted = useMemo(() => {
       const qs = stage?.pipeline?.extract?.questions || {}
       return Object.keys(qs).filter(k => cas.data[k]).map(k => ({ field: k, value: String(cas.data[k]) }))
     }, [cas.data, stage])
 
+    const parseType = stage?.pipeline?.parse?.type
+    const parsedRows = store.useChildren(cas.id, parseType || '') as PostRecord[]
+
+    const runningRef = React.useRef(false)
     const runPipeline = async () => {
-      if (!stage?.pipeline) return
+      if (!stage?.pipeline || runningRef.current) return
+      runningRef.current = true
       setRunning(true)
       try {
-        const apiUrl = store.useOption('openai_api_url') || 'https://api.openai.com/v1/chat/completions'
-        const apiKey = store.useOption('openai_api_key') || ''
-        const model = store.useOption('openai_model') || 'gpt-4o-mini'
-        await runOcrPipeline(store as any, cas.id, files, { ocr: ocrEvents, chunks: chunkEvents }, stage.pipeline, sdk.log, { apiUrl, apiKey, model })
+        await runOcrPipeline(store as any, cas.id, files, { ocr: [], chunks: [] }, stage.pipeline, sdk.log, { apiUrl, apiKey, model: apiModel }, stageId)
+        store.update(cas.id, { [doneKey]: true })
       } catch (e: unknown) { sdk.log(`Pipeline: ${e instanceof Error ? e.message : String(e)}`, 'error') }
+      runningRef.current = false
       setRunning(false)
     }
 
@@ -131,20 +170,135 @@ const plugin: PluginFactory = (deps) => {
           {phase === 'upload' && checklist.map((c: TaskDef, i: number) => <ui.CheckItem key={i} label={c.text} />)}
           {phase === 'ready' && files.map((ev: PostRecord) => <ui.CheckItem key={ev.id} label={ev.data.text} checked />)}
           {phase === 'done' && extracted.length > 0 && extracted.map(e => <ui.ListItem key={e.field} label={e.field} detail={e.value} />)}
-          {phase === 'done' && extracted.length === 0 && <ui.CheckItem label="Dokument przeanalizowany" checked />}
+          {phase === 'done' && parsedRows.length > 0 && <ui.CheckItem label={`Historia spłat: ${parsedRows.length} rekordów`} checked />}
+          {phase === 'done' && extracted.length === 0 && parsedRows.length === 0 && <ui.CheckItem label="Dokument przeanalizowany" checked />}
         </ui.Stack>}
         bottom={<ui.Stack gap="md">
-          {phase === 'upload' && <><ui.FileAction icon={icons.Upload} title="Wybierz plik" subtitle="PDF, TXT lub skan dokumentu" onClick={() => uploadFile(cas.id)} />
+          {phase === 'upload' && <><ui.FileAction icon={icons.Upload} title="Wybierz plik" subtitle="PDF, TXT lub skan dokumentu" onClick={async () => { const ev = await uploadFile(cas.id); if (ev) store.update(ev.id, { stageId }) }} />
             {nextId && <ui.Button size="lg" color="primary" outline block onClick={() => advanceToStage(cas.id, nextId, wf)}>Pomiń ten krok</ui.Button>}</>}
-          {phase === 'ready' && <><ui.Button size="lg" color="ghost" onClick={() => uploadFile(cas.id)}>+ Dodaj kolejny</ui.Button>
-            <ui.Button size="lg" color="primary" block onClick={runPipeline}>Analizuj dokumenty</ui.Button></>}
-          {phase === 'analyzing' && <ui.Placeholder text="Analizuję dokumenty..."><ui.Spinner /></ui.Placeholder>}
+          {phase === 'ready' && <>{checklist.length > 1 && <ui.Button size="lg" color="ghost" onClick={async () => { const ev = await uploadFile(cas.id); if (ev) store.update(ev.id, { stageId }) }}>+ Dodaj kolejny</ui.Button>}
+            <ui.Button size="lg" color="primary" block onClick={runPipeline}>{files.length === 1 ? 'Analizuj dokument' : 'Analizuj dokumenty'}</ui.Button></>}
+          {phase === 'analyzing' && <ui.Placeholder text="Analizuję..."><ui.Spinner /></ui.Placeholder>}
           {phase === 'done' && nextId && <ui.Button size="lg" color="primary" block onClick={() => advanceToStage(cas.id, nextId, wf)}>Dalej</ui.Button>}
         </ui.Stack>}
       /></ui.Stage></ui.Page>
     )
   }
-  registerStageView('upload', UploadView)
+  sdk.registerStageView('upload', UploadView)
+
+  function CalcRedirectView(props: StageViewProps) {
+    const { node, cas, wf } = props
+    const stage = wf.stages.find((s: StageDef) => s.id === node.id)
+    const targetPlugin = (stage as any)?.targetPlugin || 'plugin-wibor-calc'
+    const available = sdk.getAllPlugins().some(p => p.id === targetPlugin)
+    const nextId = getNextStage(wf, node.id)
+    const stepNum = node.data.label.match(/^(\d+)/)?.[1]
+    const title = node.data.label.replace(/^\d+\.\s*/, '')
+
+    const openCalc = () => {
+      sdk.shared.setState({
+        crm: { caseId: cas.id },
+        navigate: { from: 'plugin-workflow-crm', label: 'Wróć do sprawy', onReturn: () => {
+          if (nextId) advanceToStage(cas.id, nextId, wf)
+        }}
+      })
+      sdk.useHostStore.setState({ activeId: targetPlugin })
+    }
+
+    return (
+      <ui.Page><ui.Stage><ui.StageLayout
+        top={<ui.Stack gap="md">
+          <ui.StepHeading step={stepNum} title={title} subtitle={node.data.description} />
+          {cas.data.loanAmount && <ui.ListItem label="Kwota kredytu" detail={`${cas.data.loanAmount} PLN`} />}
+          {cas.data.opponent && <ui.ListItem label="Bank" detail={cas.data.opponent} />}
+        </ui.Stack>}
+        bottom={<ui.Stack gap="md">
+          {available
+            ? <ui.Button size="lg" color="primary" block onClick={openCalc}>Otwórz kalkulator</ui.Button>
+            : <ui.Card color="warning"><ui.Text muted>Plugin kalkulatora nie jest zainstalowany</ui.Text></ui.Card>}
+          {nextId && <ui.Button size="lg" color="primary" outline block onClick={() => advanceToStage(cas.id, nextId, wf)}>Pomiń → Podsumowanie</ui.Button>}
+        </ui.Stack>}
+      /></ui.Stage></ui.Page>
+    )
+  }
+  sdk.registerStageView('calc-redirect', CalcRedirectView)
+
+  function SummaryReportView(props: StageViewProps) {
+    const { cas } = props
+    const events = useEvents(cas.id)
+    const clients = store.usePosts('client')
+    const opponents = store.usePosts('opponent')
+
+    const client = clients.find(c => c.id === cas.data.clientId) || clients.find(c => c.parentId === cas.id)
+    const opponent = cas.data.opponent ? opponents.find(o => o.id === cas.data.opponent) : null
+    const report = events.find(e => e.data.kind === 'raport-wibor')?.data?.report as Record<string, unknown> | undefined
+
+    const fmt = (v: unknown) => typeof v === 'number' ? v.toLocaleString('pl-PL', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' PLN' : String(v || '—')
+
+    const printReport = () => {
+      const w = window.open('', '_blank')
+      if (!w) return
+      w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Raport WIBOR</title>
+<style>body{font-family:Arial,sans-serif;max-width:700px;margin:40px auto;color:#222}
+h1{font-size:20px;border-bottom:2px solid #333;padding-bottom:8px}
+h2{font-size:15px;color:#555;margin-top:24px}
+table{width:100%;border-collapse:collapse;margin:12px 0}
+td{padding:6px 8px;border-bottom:1px solid #eee}
+td:first-child{color:#666;width:40%}
+td:last-child{font-weight:600;text-align:right}
+.footer{margin-top:40px;font-size:11px;color:#999;border-top:1px solid #eee;padding-top:8px}
+@media print{body{margin:20px}}</style></head><body>
+<h1>Raport — analiza kredytu WIBOR</h1>
+<h2>Dane klienta</h2><table>
+<tr><td>Imię i nazwisko</td><td>${client?.data?.name || '—'}</td></tr>
+<tr><td>Telefon</td><td>${client?.data?.phone || '—'}</td></tr>
+<tr><td>Email</td><td>${client?.data?.email || '—'}</td></tr>
+</table>
+<h2>Dane kredytu</h2><table>
+<tr><td>Bank</td><td>${opponent?.data?.name || '—'}</td></tr>
+<tr><td>Nr umowy</td><td>${cas.data.loanNumber || '—'}</td></tr>
+<tr><td>Kwota kredytu</td><td>${fmt(cas.data.loanAmount)}</td></tr>
+<tr><td>Data umowy</td><td>${cas.data.loanDate || '—'}</td></tr>
+</table>
+${report ? `<h2>Wynik kalkulacji</h2><table>
+<tr><td>Nadpłacone odsetki</td><td>${fmt(report.overpaidInterest)}</td></tr>
+<tr><td>Przyszłe oszczędności</td><td>${fmt(report.futureSavings)}</td></tr>
+<tr><td>Korzyść łączna</td><td>${fmt(report.totalBenefit)}</td></tr>
+<tr><td>Rata aktualna</td><td>${fmt(report.currentInstallment)}</td></tr>
+<tr><td>Rata bez WIBOR</td><td>${fmt(report.installmentNoWibor)}</td></tr>
+</table>` : ''}
+<div class="footer">Wygenerowano: ${new Date().toLocaleDateString('pl-PL')} · Obieg Zero</div>
+</body></html>`)
+      w.document.close()
+      w.print()
+    }
+
+    return (
+      <ui.Page><ui.Stage><ui.StageLayout
+        top={<ui.Stack gap="md">
+          <ui.StepHeading step="3" title="Podsumowanie" subtitle="Przegląd zebranych danych" />
+          <ui.Card title="Klient"><ui.Stack>
+            <ui.ListItem label="Imię i nazwisko" detail={client?.data?.name || '—'} />
+            <ui.ListItem label="Telefon" detail={client?.data?.phone || '—'} />
+            <ui.ListItem label="Email" detail={client?.data?.email || '—'} />
+          </ui.Stack></ui.Card>
+          <ui.Card title="Kredyt"><ui.Stack>
+            <ui.ListItem label="Bank" detail={opponent?.data?.name || '—'} />
+            <ui.ListItem label="Kwota" detail={fmt(cas.data.loanAmount)} />
+            <ui.ListItem label="Nr umowy" detail={cas.data.loanNumber || '—'} />
+          </ui.Stack></ui.Card>
+          {report && <ui.Card title="Kalkulacja WIBOR"><ui.Stack>
+            <ui.ListItem label="Nadpłacone odsetki" detail={fmt(report.overpaidInterest)} />
+            <ui.ListItem label="Korzyść łączna" detail={fmt(report.totalBenefit)} />
+            <ui.ListItem label="Rata bez WIBOR" detail={fmt(report.installmentNoWibor)} />
+          </ui.Stack></ui.Card>}
+          {!report && <ui.Card color="warning"><ui.Text muted>Brak raportu z kalkulatora — pomiń lub wróć do kroku 2</ui.Text></ui.Card>}
+        </ui.Stack>}
+        bottom={<ui.Button size="lg" color="primary" block onClick={printReport}>Drukuj raport PDF</ui.Button>}
+      /></ui.Stage></ui.Page>
+    )
+  }
+  sdk.registerStageView('summary-report', SummaryReportView)
 
   // ── Inject CSS ──────────────────────────────────────────────────
 
@@ -210,7 +364,7 @@ const plugin: PluginFactory = (deps) => {
 
     const node = wf.nodes.find(n => n.id === activeNodeId)
     if (!node) return <ui.Page><ui.Stage><ui.Placeholder text="Wybierz etap na grafie" /></ui.Stage></ui.Page>
-    const View = getStageView(node)
+    const View = sdk.getStageView(node)
     return <View {...blockProps(node, cas, wf)} />
   }
 
@@ -242,7 +396,7 @@ const plugin: PluginFactory = (deps) => {
   sdk.registerView('crm.right', { slot: 'right', component: RightPanel })
   sdk.registerView('crm.footer', { slot: 'footer', component: Footer })
 
-  return { id: 'workflow-crm', label: 'Kancelaria', description: 'Workflow-driven CRM', version: '0.8.0', icon: icons.Briefcase }
+  return { id: 'plugin-workflow-crm', label: 'Kancelaria', description: 'Workflow-driven CRM', version: '0.8.0', icon: icons.Briefcase }
 }
 
 export default plugin
